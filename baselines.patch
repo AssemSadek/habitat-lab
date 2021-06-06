@@ -1,0 +1,111 @@
+diff --git a/habitat_baselines/rl/ddppo/policy/resnet_policy.py b/habitat_baselines/rl/ddppo/policy/resnet_policy.py
+index 91465c7..67f0fd6 100644
+--- a/habitat_baselines/rl/ddppo/policy/resnet_policy.py
++++ b/habitat_baselines/rl/ddppo/policy/resnet_policy.py
+@@ -7,6 +7,7 @@
+ 
+ from typing import Dict, Tuple
+ 
++from math import ceil
+ import numpy as np
+ import torch
+ from gym import spaces
+@@ -94,14 +95,21 @@ class ResNetEncoder(nn.Module):
+         super().__init__()
+ 
+         if "rgb" in observation_space.spaces:
+-            self._n_input_rgb = observation_space.spaces["rgb"].shape[2]
+-            spatial_size = observation_space.spaces["rgb"].shape[0] // 2
++            h, w, c = observation_space.spaces["rgb"].shape
++            self._n_input_rgb = c
++            spatial_height = h // 2 # avg pool
++            spatial_width = w // 2 # avg pool
+         else:
+             self._n_input_rgb = 0
+ 
+         if "depth" in observation_space.spaces:
+-            self._n_input_depth = observation_space.spaces["depth"].shape[2]
+-            spatial_size = observation_space.spaces["depth"].shape[0] // 2
++            h, w, c = observation_space.spaces["depth"].shape
++            self._n_input_depth = c
++            if self._n_input_rgb > 0:
++                assert spatial_height == h // 2 and spatial_width == w // 2
++            else:
++                spatial_height = h // 2 # avg pool
++                spatial_width = w // 2 # avg pool
+         else:
+             self._n_input_depth = 0
+ 
+@@ -116,12 +124,15 @@ class ResNetEncoder(nn.Module):
+             input_channels = self._n_input_depth + self._n_input_rgb
+             self.backbone = make_backbone(input_channels, baseplanes, ngroups)
+ 
+-            final_spatial = int(
+-                spatial_size * self.backbone.final_spatial_compress
++            final_height = ceil(
++                    spatial_height * self.backbone.final_spatial_compress
++            )
++            final_width = ceil(
++                    spatial_width * self.backbone.final_spatial_compress
+             )
+             after_compression_flat_size = 2048
+             num_compression_channels = int(
+-                round(after_compression_flat_size / (final_spatial ** 2))
++                round(after_compression_flat_size / (final_height * final_width))
+             )
+             self.compression = nn.Sequential(
+                 nn.Conv2d(
+@@ -137,8 +148,8 @@ class ResNetEncoder(nn.Module):
+ 
+             self.output_shape = (
+                 num_compression_channels,
+-                final_spatial,
+-                final_spatial,
++                final_height,
++                final_width,
+             )
+ 
+     @property
+diff --git a/habitat_baselines/rl/requirements.txt b/habitat_baselines/rl/requirements.txt
+index c79d56b..8aedbe1 100644
+--- a/habitat_baselines/rl/requirements.txt
++++ b/habitat_baselines/rl/requirements.txt
+@@ -1,5 +1,5 @@
+ moviepy>=1.0.1
+ torch>=1.3.1
+ # full tensorflow required for tensorboard video support
+-tensorflow==1.13.1
++tensorflow
+ tb-nightly
+diff --git a/habitat_baselines/utils/env_utils.py b/habitat_baselines/utils/env_utils.py
+index d0dbd25..13d4476 100644
+--- a/habitat_baselines/utils/env_utils.py
++++ b/habitat_baselines/utils/env_utils.py
+@@ -64,7 +64,7 @@ def construct_envs(
+                 "No scenes to load, multiple process logic relies on being able to split scenes uniquely between processes"
+             )
+ 
+-        if len(scenes) < num_environments:
++        if 1 < len(scenes) < num_environments:
+             raise RuntimeError(
+                 "reduce the number of environments as there "
+                 "aren't enough number of scenes.\n"
+@@ -75,11 +75,14 @@ def construct_envs(
+ 
+         random.shuffle(scenes)
+ 
+-    scene_splits: List[List[str]] = [[] for _ in range(num_environments)]
+-    for idx, scene in enumerate(scenes):
+-        scene_splits[idx % len(scene_splits)].append(scene)
++    if len(scenes) == 1:
++        scene_splits = [[scenes[0]] for _ in range(num_environments)]
++    else:
++        scene_splits: List[List[str]] = [[] for _ in range(num_environments)]
++        for idx, scene in enumerate(scenes):
++            scene_splits[idx % len(scene_splits)].append(scene)
+ 
+-    assert sum(map(len, scene_splits)) == len(scenes)
++        assert sum(map(len, scene_splits)) == len(scenes)
+ 
+     for i in range(num_environments):
+         proc_config = config.clone()
